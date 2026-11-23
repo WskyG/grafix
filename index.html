@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbit Trails (QB64 port)</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; -webkit-user-select:none; user-select:none; }
+  canvas { display:block; margin:auto; position:absolute; inset:0; max-width:100vw; max-height:100vh; }
+  #bar {
+    position:fixed; left:0; right:0; bottom:0; z-index:2;
+    display:flex; flex-wrap:wrap; justify-content:center; gap:10px;
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    transition:opacity .4s;
+  }
+  #bar.dim { opacity:.35; }
+  #bar:hover, #bar:focus-within, #bar:active { opacity:1; }
+  button {
+    min-width:64px; min-height:48px; padding:0 18px;
+    font:600 16px system-ui, -apple-system, sans-serif; color:#e8e8e8;
+    background:rgba(40,40,48,.85); border:1px solid #666; border-radius:10px;
+    touch-action:manipulation; -webkit-tap-highlight-color:transparent; cursor:pointer;
+  }
+  button:active { background:rgba(90,90,110,.95); }
+  button:focus-visible { outline:2px solid #8cf; outline-offset:2px; }
+  #speed { align-self:center; min-width:70px; text-align:center; color:#aaa; font:14px monospace; }
+  #start {
+    position:fixed; inset:0; z-index:3; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.55);
+  }
+  #start button { min-height:64px; padding:0 40px; font-size:22px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+
+<div id="start"><button id="btnStart" type="button">Start</button></div>
+
+<div id="bar" class="dim">
+  <button id="btnPause" type="button">Pause</button>
+  <button id="btnRestart" type="button">Restart</button>
+  <button id="btnSlower" type="button" aria-label="Slower">&minus;</button>
+  <span id="speed">speed 3</span>
+  <button id="btnFaster" type="button" aria-label="Faster">+</button>
+  <button id="btnSave" type="button">Save PNG</button>
+  <button id="btnFull" type="button">Fullscreen</button>
+</div>
+
+<script>
+"use strict";
+const W = 1920, H_PX = 1080;
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const img = ctx.createImageData(W, H_PX);
+const buf = new Uint32Array(img.data.buffer);   // ABGR on little-endian
+
+const Q = 57.29577951;
+const A = 400, B = 240;
+const rgb = (r, g, b) => (0xFF000000 | (b << 16) | (g << 8) | r) >>> 0;
+const BLACK = 0xFF000000 >>> 0;
+
+// QB64-style 1px outline circle (no antialiasing, so the eraser removes pixels exactly)
+function circle(cx, cy, r, col) {
+  cx = Math.round(cx); cy = Math.round(cy); r = Math.round(r);
+  let x = r, y = 0, err = 1 - r;
+  const put = (px, py) => {
+    if (px >= 0 && px < W && py >= 0 && py < H_PX) buf[py * W + px] = col;
+  };
+  while (x >= y) {
+    put(cx + x, cy + y); put(cx - x, cy + y); put(cx + x, cy - y); put(cx - x, cy - y);
+    put(cx + y, cy + x); put(cx - y, cy + x); put(cx + y, cy - x); put(cx - y, cy - x);
+    y++;
+    if (err < 0) err += 2 * y + 1;
+    else { x--; err += 2 * (y - x) + 1; }
+  }
+}
+
+let s;   // simulation state
+
+function init() {
+  const rnd = Math.random;
+  s = {
+    I: 180, J: 180, K: 0,
+    E: 1 + rnd() * 350, F: 1 + rnd() * 350, G: 1 + rnd() * 350,
+    EI: 0.0001, FJ: 0.0001, GK: 0.0001,
+    RD: 11, DR: 0.02,
+    SC: rnd() * 240, CS: rnd() * 2, SA: 0.00005,
+    GR: rnd() * 240, RG: rnd() * 2, GA: 0.00005,
+    BL: rnd() * 240, LB: rnd() * 3, BA: 0.00005,
+    DE: 0
+  };
+  // eraser = copy of the initial state, runs 500 steps behind
+  s.II = s.I; s.JJ = s.J; s.KK = s.K;
+  s.EE = s.E; s.FF = s.F; s.GG = s.G;
+  s.IE = s.EI; s.JF = s.FJ; s.KG = s.GK;
+  s.ER = 11; s.RE = s.DR;
+  buf.fill(BLACK);
+}
+
+function step() {
+  // ---- draw ----
+  const R = s.I / Q, S = s.J / Q, T = s.K / Q;
+  const X = A * Math.sin(R) + 960, Y = B * Math.cos(R) + 540;
+  const Hh = A * Math.sin(S) + X, V = B * Math.cos(S) + Y;
+  const M = A * Math.sin(T) + X, N = B * Math.cos(T) + Y;
+  circle(Hh, V, s.RD, rgb(Math.floor(s.SC), Math.floor(s.GR), Math.floor(s.BL)));
+  circle(M, N, 71 - s.RD,
+         rgb(255 - Math.floor(s.SC), Math.floor(255 - s.GR), Math.floor(255 - s.BL)));
+
+  s.RD += s.DR; if (s.RD < 2 || s.RD > 70) s.DR = -s.DR;
+
+  s.I -= s.E; if (s.I < -179) s.I += 360;
+  s.E += s.EI; if (Math.abs(s.E) > 359) s.EI = -s.EI;
+  s.J -= s.F; if (s.J < -179) s.J += 360;
+  s.F += s.FJ; if (Math.abs(s.F) > 359) s.FJ = -s.FJ;
+  s.K += s.G; if (s.K > 179) s.K -= 360;
+  s.G += s.GK; if (Math.abs(s.G) > 359) s.GK = -s.GK;
+
+  s.SC += s.CS; if (s.SC < 50 || s.SC > 255 - Math.abs(s.CS)) s.CS = -s.CS;
+  s.GR += s.RG; if (s.GR < Math.abs(s.RG) || s.GR > 255 - Math.abs(s.RG)) s.RG = -s.RG;
+  s.BL += s.LB; if (s.BL < Math.abs(s.LB) || s.BL > 255 - Math.abs(s.LB)) s.LB = -s.LB;
+
+  s.CS += s.SA; if (s.CS < 1 || s.CS > 125) s.SA = -s.SA;
+  s.RG += s.GA; if (s.RG < 1 || s.RG > 123) s.GA = -s.GA;
+  s.LB += s.BA; if (s.LB < 1 || s.LB > 124) s.BA = -s.BA;
+
+  // ---- eraser (starts after 500 steps) ----
+  if (s.DE < 500) { s.DE++; return; }
+  const RR = s.II / Q, SS = s.JJ / Q, TT = s.KK / Q;
+  const EX = A * Math.sin(RR) + 960, EY = B * Math.cos(RR) + 540;
+  const EH = A * Math.sin(SS) + EX, EV = B * Math.cos(SS) + EY;
+  const EM = A * Math.sin(TT) + EX, EN = B * Math.cos(TT) + EY;
+  circle(EH, EV, s.ER, BLACK);
+  circle(EM, EN, 71 - s.ER, BLACK);
+  s.ER += s.RE; if (s.ER < 2 || s.ER > 70) s.RE = -s.RE;
+
+  s.II -= s.EE; if (s.II < -179) s.II += 360;
+  s.EE += s.IE; if (Math.abs(s.EE) > 359) s.IE = -s.IE;
+  s.JJ -= s.FF; if (s.JJ < -179) s.JJ += 360;
+  s.FF += s.JF; if (Math.abs(s.FF) > 359) s.JF = -s.JF;
+  s.KK += s.GG; if (s.KK > 179) s.KK -= 360;
+  s.GG += s.KG; if (Math.abs(s.GG) > 359) s.KG = -s.KG;
+}
+
+let started = false, paused = false, stepsPerFrame = 3;
+
+function frame() {
+  if (started && !paused) for (let i = 0; i < stepsPerFrame; i++) step();
+  ctx.putImageData(img, 0, 0);
+  requestAnimationFrame(frame);
+}
+
+// ---- controls (buttons call the same functions the keys do) ----
+const $ = id => document.getElementById(id);
+const bar = $("bar");
+
+function startRun()  { started = true; $("start").hidden = true; bar.classList.add("dim"); }
+function togglePause() { paused = !paused; $("btnPause").textContent = paused ? "Resume" : "Pause"; }
+function restart()   { init(); paused = false; $("btnPause").textContent = "Pause"; }
+function setSpeed(n) { stepsPerFrame = Math.max(1, Math.min(40, n)); $("speed").textContent = "speed " + stepsPerFrame; }
+function savePNG() {
+  cv.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.download = "orbit_trails.png"; a.href = url;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }, "image/png");
+}
+function toggleFull() {
+  const el = document.documentElement;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+  }
+}
+
+$("btnStart").addEventListener("click", startRun);
+$("btnPause").addEventListener("click", togglePause);
+$("btnRestart").addEventListener("click", restart);
+$("btnSlower").addEventListener("click", () => setSpeed(stepsPerFrame - 1));
+$("btnFaster").addEventListener("click", () => setSpeed(stepsPerFrame + 1));
+$("btnSave").addEventListener("click", savePNG);
+$("btnFull").addEventListener("click", toggleFull);
+
+// Hide the Fullscreen button where the browser has no fullscreen API (e.g. iPhone Safari)
+if (!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) {
+  $("btnFull").hidden = true;
+}
+
+// Keyboard shortcuts still work when a keyboard is present
+window.addEventListener("keydown", e => {
+  if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+  if (!started) { startRun(); return; }
+  switch (e.key.toLowerCase()) {
+    case " ": togglePause(); e.preventDefault(); break;
+    case "r": restart(); break;
+    case "+": case "=": setSpeed(stepsPerFrame + 1); break;
+    case "-": case "_": setSpeed(stepsPerFrame - 1); break;
+    case "s": savePNG(); break;
+    case "f": toggleFull(); break;
+  }
+});
+
+init();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
